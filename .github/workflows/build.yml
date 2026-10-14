@@ -1,0 +1,74 @@
+name: build-and-push
+
+# Builds the multi-arch (amd64/arm64/ppc64le/s390x) turbostat/pcm debug image
+# and pushes it to quay.io/midu/turbostat-7149007.
+#
+# Required repository secrets:
+#   QUAY_USERNAME  - quay.io robot/user name (e.g. midu+github)
+#   QUAY_PASSWORD  - the corresponding token/password
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'Containerfile'
+      - 'monitor-isolated-cpus.sh'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - 'Containerfile'
+      - 'monitor-isolated-cpus.sh'
+  workflow_dispatch:
+
+env:
+  IMAGE: quay.io/midu/turbostat-7149007
+  PLATFORMS: linux/amd64,linux/arm64,linux/ppc64le,linux/s390x
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (cross-arch emulation)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      - name: Compute tags
+        id: tags
+        run: |
+          tags="${IMAGE}:latest ${IMAGE}:${GITHUB_SHA::12}"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tags="${tags} ${IMAGE}:${GITHUB_REF_NAME}"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+
+      - name: Build multi-arch image
+        id: build
+        uses: redhat-actions/buildah-build@v2
+        with:
+          image: ${{ env.IMAGE }}
+          tags: ${{ steps.tags.outputs.tags }}
+          platforms: ${{ env.PLATFORMS }}
+          containerfiles: ./Containerfile
+
+      # Only log in and push for real builds, never for pull_request events.
+      - name: Log in to Quay.io
+        if: github.event_name != 'pull_request'
+        uses: redhat-actions/podman-login@v1
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - name: Push to Quay.io
+        if: github.event_name != 'pull_request'
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: ${{ env.IMAGE }}
+          tags: ${{ steps.tags.outputs.tags }}
